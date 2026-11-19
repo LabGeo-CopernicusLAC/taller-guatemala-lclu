@@ -1,0 +1,12 @@
+﻿/data/
+/distribucion/
+*.tif
+*.tiff
+*.vrt
+*.aux.xml
+*.ovr
+.ipynb_checkpoints/
+__pycache__/
+.Rhistory
+.RData
+.Rproj.user/

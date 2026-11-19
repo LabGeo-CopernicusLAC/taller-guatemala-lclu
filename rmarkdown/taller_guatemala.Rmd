@@ -1,0 +1,493 @@
+---
+title: "Taller de Cobertura y Uso del Suelo"
+subtitle: "Análisis geoespacial y comparación de productos para Guatemala (2020)"
+author: "CopernicusLAC Chile"
+date: "Noviembre de 2026"
+lang: es
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    highlight: tango
+    self_contained: true
+    df_print: paged
+---
+
+```{r configuracion_documento, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE, warning=FALSE, message=FALSE,
+                      fig.align='center', out.width='95%')
+# La compilación de esta guía NO ejecuta PyQGIS: presenta resultados ya producidos.
+# Las imágenes deben ubicarse en figures/ (carpeta hermana de rmarkdown/).
+# Al compilar desde rmarkdown/, las rutas de figuras parten de la raíz del proyecto.
+# Devolvemos el objeto knitr_image directamente: print() dentro de una función
+# impide que knitr lo procese como una figura HTML.
+figura <- function(ruta, titulo=NULL, ancho='95%') {
+  if (!file.exists(ruta)) {
+    warning(paste('Falta la figura:', ruta), call. = FALSE)
+    return(knitr::asis_output(paste0(
+      '\n> **Figura no encontrada:** `', ruta,
+      '`. Revise que exista en la carpeta `figures/`.\n'
+    )))
+  }
+  knitr::include_graphics(normalizePath(ruta, winslash='/', mustWork=TRUE))
+}
+fmt_num <- function(x, digits=0) formatC(x, format='f', digits=digits,
+                                          big.mark='.', decimal.mark=',')
+```
+
+# Presentación del taller
+
+Esta guía acompaña al notebook **`notebooks/Taller_guatemala.ipynb`**, ejecutado dentro de QGIS con PyQGIS. El ejercicio compara un mosaico de cobertura terrestre **CRCLAC 2020** con un producto local **Land Cover Guatemala 2020**, recortando ambos al dominio de trabajo, seleccionando cultivos y analizando sus coincidencias y discrepancias espaciales.
+
+La guía es un documento **de consulta y reproducción**: describe lo ejecutado, los productos intermedios y los resultados obtenidos. No reejecuta el geoprocesamiento durante su compilación a HTML. Las interpretaciones son descriptivas y **no equivalen a una validación de exactitud temática**.
+
+
+# Material para participantes
+
+Para realizar las actividades prácticas, descarga el paquete
+completo del taller. Incluye:
+
+- Notebook de Python para ejecutar en QGIS.
+- Productos ráster CRCLAC 2020 y Land Cover Guatemala 2020.
+- Límites departamentales de Guatemala.
+- Archivos de leyendas y datos auxiliares.
+- Instrucciones para preparar el entorno de trabajo.
+
+**[Descargar material completo del taller (ZIP)](https://drive.google.com/file/d/13zph6m3BqC3TZtq1j0MN3PbjqTcZud2v/view?usp=sharing)**
+
+Una vez descargado, descomprime el archivo completo y
+conserva la estructura original de las carpetas `data/`
+y `notebooks/`.
+
+Abre `notebooks/Taller_guatemala.ipynb` mediante el
+complemento QGIS Notebook y ejecuta las celdas en orden.
+
+
+
+## Objetivos de aprendizaje
+
+- Identificar la estructura de archivos geoespaciales y cargar datos ráster y vectoriales con PyQGIS.
+- Recortar un mosaico categórico con una máscara departamental.
+- Seleccionar clases de cultivos mediante reglas explícitas y conservar NoData.
+- Alinear rásteres a una misma grilla con remuestreo por vecino más cercano.
+- Cuantificar acuerdos, discrepancias y superficies en hectáreas.
+- Analizar qué clases asigna CRCLAC a los cultivos identificados solo por el producto local.
+
+
+# Productos y datos de entrada
+
+## Archivos utilizados
+
+| Componente | Ruta relativa a la carpeta raíz | Uso |
+|---|---|---|
+| CRCLAC 2020 | `data/raster/crclac-2020/mosaic.vrt` | Ráster categórico de entrada; VRT con teselas en `img/` |
+| Leyenda CRCLAC | `data/raster/crclac-2020/legend.csv` | Códigos y nombres de cobertura |
+| Land Cover Guatemala 2020 | `data/raster/maga_gt_2020/landcover_guatemala_2020_20m.tif` | Clasificación local de referencia espacial |
+| Leyenda local | `data/raster/maga_gt_2020/legend.csv` | Códigos y nombres de uso/cobertura |
+| Límites departamentales | `data/shapes/limites_guatemala/03_Limites_departamentales.geojson` | Máscara territorial (22 polígonos) |
+| Notebook | `notebooks/Taller_guatemala.ipynb` | Ejecución de los seis ejercicios |
+
+**Alcance de las fuentes.** Los nombres y el período de los archivos provienen de los insumos usados en el taller. La procedencia institucional, licencias de redistribución, metodología de producción y exactitud publicada de ambos mapas **deben completarse con sus fichas técnicas oficiales**; esta guía no les atribuye características no verificadas.
+
+## Vista de los productos
+
+```{r figura_mosaico_original}
+figura('../figures/02_datos/crclac_mosaico_original.png')
+```
+
+*Figura 1.* Mosaico CRCLAC 2020 antes del recorte. Su visualización se genera a partir de una vista de baja resolución para fines de presentación.
+
+```{r figura_local_original}
+figura('../figures/02_datos/landcover_local_2020_mapa.png')
+```
+
+*Figura 2.* Land Cover Guatemala 2020. La simbología responde a códigos de clase, no a una escala continua de magnitud.
+
+# Preparación del entorno
+
+## Estructura del proyecto
+
+```text
+Taller_Guatemala/
+├── data/
+│   ├── raster/
+│   │   ├── crclac-2020/
+│   │   ├── maga_gt_2020/
+│   │   └── salidas_comparacion/   # se genera durante los ejercicios
+│   └── shapes/
+├── notebooks/
+│   └── Taller_guatemala.ipynb
+├── scripts/
+├── figures/
+├── rmarkdown/
+│   └── taller_guatemala.Rmd
+└── docs/                     # HTML publicado
+```
+
+Para ejecutar el notebook se requiere **QGIS con su entorno Python compatible**, el complemento de notebooks utilizado en el taller, Processing, GDAL, NumPy, Pandas y Matplotlib. **No instalar PyQGIS con `pip` indiscriminadamente**: QGIS proporciona sus bibliotecas nativas y su intérprete Python.
+
+## Preparación: Selección de carpeta raíz
+
+La persona participante selecciona la carpeta que contiene `data/` y `notebooks/`. A partir de ella se definen `PROJECT_DIR`, `RASTER_DIR`, `SHAPES_DIR` y `OUTPUT_DIR`. No se debe seleccionar `data/` como carpeta raíz.
+
+```python
+from pathlib import Path
+from qgis.PyQt.QtWidgets import QFileDialog
+
+ruta = QFileDialog.getExistingDirectory(None, 'Carpeta raíz del taller', str(Path.home()))
+PROJECT_DIR = Path(ruta).resolve()
+RASTER_DIR = PROJECT_DIR / 'data' / 'raster'
+SHAPES_DIR = PROJECT_DIR / 'data' / 'shapes'
+OUTPUT_DIR = RASTER_DIR / 'salidas_comparacion'
+```
+
+El fragmento resume el procedimiento; el notebook descargable contiene las validaciones de existencia de rutas y la creación de la carpeta de salidas.
+
+## Preparación: Dependencias
+
+Se verifica la disponibilidad de módulos `qgis.core`, `qgis.PyQt`, `processing`, `osgeo.gdal` y `numpy`; para el análisis tabular y las gráficas se usan además `pandas` y `matplotlib`. Los módulos vinculados a QGIS deben provenir de un entorno compatible con su instalación.
+
+## Preparación: Carga de capas y simbología
+
+Se crean `QgsRasterLayer` para los dos productos y `QgsVectorLayer` para el GeoJSON. El código lee los CSV de leyendas, configura un renderizador categórico `QgsPalettedRasterRenderer` y muestra las proyecciones y extensiones. Los colores asignados para visualización **no implican equivalencia semántica** entre leyendas.
+
+```{r figura_departamentos}
+figura('../figures/02_datos/limites_departamentales.png')
+```
+
+*Figura 3.* Máscara territorial de 22 polígonos departamentales.
+
+# Ejercicio: Recorte espacial de CRCLAC
+
+## Objetivo y procedimiento
+
+Recortar el mosaico CRCLAC al territorio definido por `03_Limites_departamentales.geojson`, usando el algoritmo **`gdal:cliprasterbymasklayer`**. La versión de QGIS del taller utiliza el parámetro `OPTIONS` (no `CREATION_OPTIONS`) para la compresión de salida. Se usaron `CROP_TO_CUTLINE=True`, `KEEP_RESOLUTION=True` y compresión LZW.
+
+```python
+resultado = processing.run('gdal:cliprasterbymasklayer', {
+    'INPUT': crclac,
+    'MASK': area_estudio,
+    'TARGET_CRS': crclac.crs(),
+    'CROP_TO_CUTLINE': True,
+    'KEEP_RESOLUTION': True,
+    'MULTITHREADING': True,
+    'OPTIONS': 'COMPRESS=LZW|TILED=YES',
+    'OUTPUT': str(OUTPUT_DIR / 'crclac_2020_area_estudio.tif')
+})
+```
+
+## Resultado observado
+
+| Propiedad | Mosaico original | Recortado |
+|---|---:|---:|
+| Columnas | 25.946 | 22.368 |
+| Filas | 25.698 | 22.705 |
+| CRS del resultado | — | EPSG:4326 |
+
+La extensión reportada fue: oeste **-92,240271**, sur **13,738475**, este **-88,221568** y norte **17,817724** (coordenadas geográficas). El archivo generado fue `crclac_2020_area_estudio.tif`.
+
+```{r figura_recorte}
+figura('../figures/02_datos/crclac_recortado_mapa.png')
+```
+
+*Figura 4.* CRCLAC recortado mediante los límites departamentales de Guatemala.
+
+**Control recomendado:** comprobar también NoData y resolución del ráster resultante. El recorte no armoniza todavía las grillas espaciales de ambos productos.
+
+# Ejercicio: Selección de clases de cultivos
+
+## Criterios temáticos
+
+El taller utiliza el código **8192** para cultivos CRCLAC. En el mapa local se seleccionan códigos en los intervalos **200–299**, **2000–2999** y **20000–29999**, excluyendo **231** y **232** (pastos cultivados y naturales, respectivamente, de acuerdo con la convención utilizada en el notebook). Estas reglas corresponden al ejercicio y no deben generalizarse a otras leyendas sin revisarlas.
+
+Cada salida es una máscara de tipo **Byte**, con `1` para cultivo, `0` para otra clase y `255` para NoData.
+
+## Resultados observados
+
+| Propiedad | Cultivos CRCLAC | Cultivos local |
+|---|---:|---:|
+| Dimensiones (columnas × filas) | 22.368 × 22.705 | 21.532 × 22.665 |
+| Tipo de dato | Byte | Byte |
+| NoData | 255 | 255 |
+
+```{r figura_cultivos_crclac}
+figura('../figures/03_visualizacion/cultivos_crclac.png')
+```
+
+*Figura 5.* Cultivos seleccionados en CRCLAC.
+
+```{r figura_cultivos_local}
+figura('../figures/03_visualizacion/cultivos_local.png')
+```
+
+*Figura 6.* Cultivos seleccionados en el producto local de Guatemala.
+
+La distribución visual de los cultivos difiere entre productos, pero la comparación píxel a píxel **aún no es válida**, pues las dimensiones y grillas no coinciden en esta etapa.
+
+# Ejercicio: Alineación espacial
+
+## Objetivo
+
+Alinear los **códigos categóricos originales de CRCLAC**, no solo su máscara de cultivos, con la grilla local. Se empleó **GDAL Warp** y remuestreo por **vecino más cercano**, adecuado para no interpolar códigos temáticos.
+
+## Grilla de referencia y verificación
+
+| Característica | Valor |
+|---|---|
+| Sistema de coordenadas | EPSG:32615 (UTM zona 15N) |
+| Tamaño del píxel | 20 × 20 m |
+| Dimensiones | 21.532 × 22.665 píxeles |
+| Extensión UTM | (581840, 1520760, 1012480, 1974060) |
+| NoData de CRCLAC alineado | 0 |
+
+El proceso verificó: **mismas dimensiones = True**, **mismo geotransform = True** y **mismo CRS = True**. La coincidencia exacta de estas propiedades es indispensable para el cruce posterior.
+
+```{r figura_alineacion}
+figura('../figures/04_comparacion/crclac_alineado_mapa.png')
+```
+
+*Figura 7.* Clasificación original CRCLAC remuestreada a la grilla local. La alineación espacial no implica que ambas clasificaciones sean temáticamente equivalentes.
+
+# Ejercicio: Cruce espacial de cultivos
+
+## Reglas de cruce
+
+Se comparó, para cada píxel válido común, la clase 8192 de CRCLAC alineado con la máscara binaria de cultivos local.
+
+| Código | Interpretación | Color cartográfico |
+|---:|---|---|
+| 0 | Ninguno clasifica como cultivo | Gris |
+| 1 | Ambos clasifican como cultivo | Verde |
+| 2 | Solo CRCLAC clasifica como cultivo | Naranja |
+| 3 | Solo el producto local clasifica como cultivo | Azul |
+| 255 | NoData / fuera del dominio común válido | Transparente |
+
+## Superficies observadas
+
+```{r tabla_cruce, results='asis'}
+cruce_resultados <- data.frame(
+  Categoria=c('Ninguno','Ambos','Solo CRCLAC','Solo local'),
+  Pixeles=c(166108331,35527980,27103189,41545610)
+)
+cruce_resultados$Hectareas <- cruce_resultados$Pixeles * 0.04
+cruce_resultados$Porcentaje <- 100 * cruce_resultados$Pixeles / sum(cruce_resultados$Pixeles)
+knitr::kable(data.frame(
+  Categoria=cruce_resultados$Categoria,
+  'Píxeles'=fmt_num(cruce_resultados$Pixeles),
+  'Superficie (ha)'=fmt_num(cruce_resultados$Hectareas,2),
+  'Porcentaje válido'=paste0(fmt_num(cruce_resultados$Porcentaje,2),' %'),
+  check.names=FALSE), caption='Cruce espacial sobre píxeles válidos comunes.')
+```
+
+El dominio válido contiene **270.285.110 píxeles**, equivalentes a **10.811.404,40 ha** en la grilla UTM. Se excluyeron **217.737.670 píxeles NoData**. El tamaño de píxel es 400 m² = **0,04 ha**.
+
+```{r figura_cruce}
+figura('../figures/04_comparacion/cruce_cultivos.png')
+```
+
+*Figura 8.* Acuerdo y discrepancias en la identificación de cultivos entre CRCLAC y el producto local. La diferencia neta entre superficies identificadas por ambos productos no puede interpretarse como error de uno de ellos.
+
+# Ejercicio: Matriz de clases y análisis de discrepancias agrícolas
+
+## Objetivo
+
+Analizar las áreas que **Land Cover Guatemala 2020 clasifica como cultivos, pero CRCLAC 2020 no**, identificando las categorías originales que CRCLAC asigna a esas superficies. El ejercicio permite discutir diferencias entre *uso* y *cobertura* del suelo, sin asumir que alguno de los productos constituye una verdad de terreno.
+
+## Datos de entrada y metodología
+
+Se compararon ambos productos sobre una **grilla común de 20 × 20 m**, con sistema de referencia **EPSG:32615**. Previamente, CRCLAC se recortó al área de estudio y se alineó a la grilla local mediante remuestreo por **vecino más cercano** para conservar sus códigos categóricos. Se utilizaron únicamente los píxeles válidos en ambos productos; los valores NoData quedaron excluidos del análisis.
+
+Se clasificaron las combinaciones de la siguiente manera:
+
+| Código del cruce | Interpretación |
+|:--:|---|
+| 0 | Ningún producto identifica cultivo |
+| 1 | Ambos productos identifican cultivo |
+| 2 | Solo CRCLAC identifica cultivo |
+| 3 | Solo el producto local identifica cultivo |
+| 255 | NoData: fuera del dominio común válido |
+
+Para convertir conteos de píxeles a superficie se utiliza **0,04 ha por píxel** (400 m²). Las hectáreas son superficies planimétricas sobre la grilla UTM utilizada; no representan una estimación independiente del área agrícola real.
+
+##  Matriz de acuerdo entre productos
+
+```{r e6-tabla-acuerdo, echo=FALSE}
+acuerdo_e6 <- matrix(
+  c(35527980, 41545610,
+    27103189, 166108331),
+  nrow = 2, byrow = TRUE,
+  dimnames = list(
+    'Clasificación local' = c('Cultivos', 'Otras clases'),
+    'Clasificación CRCLAC' = c('Cultivos', 'Otras clases')
+  )
+)
+tabla_acuerdo_e6 <- data.frame(
+  'Clasificación local' = rownames(acuerdo_e6),
+  'CRCLAC: cultivos' = format(acuerdo_e6[, 1], big.mark='.', scientific=FALSE),
+  'CRCLAC: otras clases' = format(acuerdo_e6[, 2], big.mark='.', scientific=FALSE),
+  check.names = FALSE
+)
+knitr::kable(tabla_acuerdo_e6, caption='Matriz de acuerdo: cantidad de píxeles válidos por combinación de clases.')
+```
+
+Los **270.285.110 píxeles válidos** corresponden a **10.811.404,40 ha**. Dentro de ese dominio, **41.545.610 píxeles** (1.661.824,40 ha) son de la categoría *Solo local*, es decir, zonas agrícolas identificadas únicamente por la clasificación local.
+
+```{r e6-figura-acuerdo, echo=FALSE, out.width='78%', fig.align='center'}
+ruta_fig_acuerdo_e6 <- '../figures/05_resultados/fig_acuerdo_productos.png'
+if (file.exists(ruta_fig_acuerdo_e6)) {
+  knitr::include_graphics(ruta_fig_acuerdo_e6)
+} else {
+  cat('**Figura pendiente:** copiar `fig_acuerdo_productos.png` a `figures/05_resultados/`.')
+}
+```
+
+*Figura 6.1.* Matriz de acuerdo binaria CRCLAC–producto local. **Los porcentajes de la figura se calculan por fila**: indican cómo CRCLAC clasifica los píxeles agrícolas y no agrícolas del producto local. No son porcentajes del territorio nacional.
+
+Los indicadores se resumen a continuación:
+
+```{r e6-indicadores, echo=FALSE}
+ambos_e6 <- acuerdo_e6[1,1]
+solo_local_e6 <- acuerdo_e6[1,2]
+solo_crclac_e6 <- acuerdo_e6[2,1]
+ninguno_e6 <- acuerdo_e6[2,2]
+total_e6 <- sum(acuerdo_e6)
+indicadores_e6 <- data.frame(
+  Indicador = c('Acuerdo global', 'Intersección sobre unión (IoU) de cultivos', 'Superficie de cultivos CRCLAC en dominio válido', 'Superficie de cultivos local en dominio válido'),
+  Resultado = c(
+    sprintf('%.2f %%', 100*(ambos_e6+ninguno_e6)/total_e6),
+    sprintf('%.2f %%', 100*ambos_e6/(ambos_e6+solo_local_e6+solo_crclac_e6)),
+    sprintf('%.2f ha', (ambos_e6+solo_crclac_e6)*0.04),
+    sprintf('%.2f ha', (ambos_e6+solo_local_e6)*0.04)
+  ), check.names=FALSE
+)
+knitr::kable(indicadores_e6, caption='Indicadores descriptivos de concordancia entre mapas.')
+```
+
+El acuerdo global está influido por los píxeles donde ambos productos identifican **otras clases**. Por ello, la IoU enfocada en cultivos resulta más informativa para describir las zonas agrícolas compartidas. Ambos valores son medidas de **concordancia**, no de exactitud temática.
+
+##  ¿Cómo clasifica CRCLAC las áreas «Solo local»?
+
+Los resultados de la matriz de clases originales muestran la siguiente composición:
+
+```{r e6-tabla-crclac, echo=FALSE}
+clases_e6 <- data.frame(
+  Clase = c('Cobertura arbórea', 'Pastizales', 'Cobertura arbustiva',
+            'Superficies artificiales', 'Vegetación herbácea acuática o inundada',
+            'Cuerpos de agua', 'Suelo desnudo', 'Manglares', 'Nieve y glaciares'),
+  Pixeles = c(26076025, 10038382, 2792993, 2417439, 137583, 68848, 13105, 1230, 5),
+  check.names=FALSE
+)
+stopifnot(sum(clases_e6$Pixeles) == solo_local_e6)
+tabla_clases_e6 <- data.frame(
+  'Clase CRCLAC' = clases_e6$Clase,
+  'Píxeles' = format(clases_e6$Pixeles, big.mark='.', scientific=FALSE),
+  'Hectáreas' = format(round(clases_e6$Pixeles * 0.04, 2), big.mark='.', decimal.mark=',', nsmall=2),
+  'Porcentaje de Solo local' = sprintf('%.2f %%', 100*clases_e6$Pixeles/solo_local_e6),
+  check.names=FALSE
+)
+knitr::kable(tabla_clases_e6, caption='Clases originales CRCLAC en las áreas clasificadas como cultivo solo por el producto local.')
+```
+
+Predominan **cobertura arbórea** (aproximadamente 62,8 %) y **pastizales** (24,2 %). Esta concentración merece especial atención en la discusión sobre cultivos arbóreos, sistemas productivos mixtos y diferencias conceptuales entre cobertura y uso del suelo.
+
+## Cultivos locales con mayor superficie de discrepancia
+
+```{r e6-tabla-cultivos, echo=FALSE}
+cultivos_e6 <- data.frame(
+  'Clase local' = c('211 · Granos básicos (maíz y frijol)', '2221 · Café',
+                    '2242 · Cardamomo', '2236 · Hule',
+                    '2421 · Café y cardamomo', '243 · Huerto',
+                    '2132 · Otras hortalizas', '2231 · Palma de aceite',
+                    '2422 · Café y banano', '2241 · Caña de azúcar'),
+  Hectareas = c(645537.8,470461.2,151707.6,108455.4,68119.6,
+                54889.4,44220.9,26629.8,17867.8,16293.1),
+  PorcentajeClase = c(55.5,87.5,89.4,77.4,68.7,82.4,28.5,14.5,95.8,5.0),
+  check.names=FALSE
+)
+tabla_cultivos_e6 <- data.frame(
+  'Clase local' = cultivos_e6[['Clase local']],
+  'Solo local (ha)' = format(round(cultivos_e6$Hectareas,1),big.mark='.',decimal.mark=',',nsmall=1),
+  'Solo local (% de la clase)' = sprintf('%.1f %%',cultivos_e6$PorcentajeClase),
+  check.names=FALSE
+)
+knitr::kable(tabla_cultivos_e6, caption='Diez cultivos locales con mayor superficie clasificada como «Solo local».')
+```
+
+**Cómo leer la tabla:** el último porcentaje indica qué proporción de **cada clase agrícola local**, dentro del dominio analizado, no está identificada como cultivo por CRCLAC. No es el porcentaje que aporta dicha clase a todas las discrepancias.
+
+Los cinco cultivos con mayor superficie discrepante (granos básicos, café, cardamomo, hule y café-cardamomo) explican aproximadamente **86,9 %** del total *Solo local*.
+
+```{r e6-figura-clases, echo=FALSE, out.width='100%', fig.align='center'}
+ruta_fig_clases_e6 <- '../figures/05_resultados/fig_clases_solo_local.png'
+if (file.exists(ruta_fig_clases_e6)) {
+  knitr::include_graphics(ruta_fig_clases_e6)
+} else {
+  cat('**Figura pendiente:** copiar `fig_clases_solo_local.png` a `figures/05_resultados/`.')
+}
+```
+
+*Figura 6.2.* Superficie discrepante por cultivo local y clase original de CRCLAC. Las barras apiladas muestran exclusivamente el dominio *Solo local*, expresado en hectáreas; los colores indican las categorías de cobertura asignadas por CRCLAC.
+
+##  Interpretación y limitaciones
+
+En el producto local se observan discrepancias relevantes para **café**, **cardamomo**, **hule** y cultivos mixtos. La alta proporción clasificada como **cobertura arbórea** por CRCLAC es **compatible con** diferencias de enfoque entre un producto que detalla usos agrícolas y otro que describe coberturas generales. Esta interpretación es una hipótesis técnica y requiere contrastar las leyendas oficiales, las metodologías de clasificación y datos independientes.
+
+Debe considerarse que:
+
+1. La concordancia entre dos productos **no equivale a exactitud** respecto de la realidad; no se calculan errores de clasificación sin información de referencia independiente.
+2. El análisis se restringe a los píxeles válidos en ambos productos; los píxeles NoData no forman parte del denominador.
+3. La alineación por vecino más cercano evita mezclar códigos, pero las diferencias de resolución, fecha, fuente, escala y definición temática pueden afectar las comparaciones.
+4. La superficie se calcula con píxeles de 20 m en EPSG:32615; es una estimación planimétrica sobre esa grilla.
+
+##  Archivos reproducibles y discusión del taller
+
+Los resultados originales se generaron en `data/raster/salidas_comparacion/`:
+
+- `resumen_clases_locales_no_mapeadas.csv`
+- `matriz_clases_locales_vs_crclac_solo_local_pixeles.csv`
+- `matriz_clases_locales_vs_crclac_solo_local_hectareas.csv`
+- `detalle_pares_local_vs_crclac_solo_local.csv`
+- `fig_acuerdo_productos.png`
+- `fig_clases_solo_local.png`
+
+**Preguntas para discusión:** ¿qué cultivos podrían confundirse con cobertura arbórea según la escala de observación? ¿Qué información de referencia permitiría distinguir una discrepancia semántica de un error de clasificación? ¿Qué implicaciones tiene esto para monitorear cambios agrícolas en Guatemala y otros países de Latinoamérica?
+
+
+# Discusión de resultados
+
+El acuerdo global está dominado en parte por las áreas no agrícolas compartidas, mientras que el indicador de intersección sobre unión se enfoca en la coincidencia de cultivos. Las discrepancias más extensas ocurren en clases agrícolas locales como **granos básicos, café, cardamomo y hule**, y corresponden principalmente a **cobertura arbórea o pastizales** en CRCLAC. Esta situación es compatible con diferencias entre categorías de cobertura y categorías de uso, pero requiere contraste con definiciones oficiales, fechas y datos de referencia para una interpretación causal.
+
+Para la discusión grupal se sugieren tres preguntas: ¿qué superficie podría ser agrícola desde el punto de vista de uso y arbórea desde la perspectiva de cobertura? ¿qué clase de información independiente permitiría validar una discrepancia? ¿qué cambios metodológicos serían necesarios para extender este ejercicio a otros países de Latinoamérica?
+
+# Reproducibilidad y entrega a participantes
+
+## Secuencia de ejecución
+
+1. Descomprimir el paquete, manteniendo intacta la estructura `data/` y `notebooks/`.
+2. Abrir QGIS y cargar el notebook con el complemento utilizado en el taller.
+3. Seleccionar la **carpeta raíz** cuando el primer ejercicio lo solicite.
+4. Ejecutar las celdas en orden: carga, recorte, máscaras, alineación, cruce y matriz.
+5. Verificar los archivos en `data/raster/salidas_comparacion/` y guardar las figuras finales.
+
+El mosaico `mosaic.vrt` utiliza referencias relativas hacia `img/`, lo que favorece su portabilidad siempre que se mantenga la estructura de carpetas. El paquete comprimido fue comprobado con una prueba de integridad, pero **es necesario volver a empaquetar el notebook corregido y hacer una ejecución de prueba desde la copia distribuida**.
+
+## Productos intermedios
+
+| Archivo de salida | Interpretación |
+|---|---|
+| `crclac_2020_area_estudio.tif` | Mosaico recortado a Guatemala |
+| `crclac_cultivos.tif` | Máscara binaria de cultivos CRCLAC |
+| `local_cultivos.tif` | Máscara binaria de cultivos local |
+| `crclac_clases_alineadas_a_local.tif` | Clases originales CRCLAC sobre la grilla local |
+| `cruce_cultivos_crclac_vs_local.tif` | Cuatro estados de comparación de cultivos |
+| `resumen_clases_locales_no_mapeadas.csv` | Superficie discrepante por clase local |
+| `matriz_clases_locales_vs_crclac_solo_local_hectareas.csv` | Matriz temática de discrepancias en hectáreas |
+| `detalle_pares_local_vs_crclac_solo_local.csv` | Desagregación de pares de clases |
+
+
+## Alcance y limitaciones
+
+Este material describe una comparación **entre productos**, no una validación contra verdad terreno. Los códigos de clases responden a las leyendas específicas usadas en 2020. Para repetir el procedimiento en otro país, deben revisarse permisos de datos, definiciones de clases, sistemas de coordenadas, resolución de referencia y dominio válido. Los mapas PNG son visualizaciones: los cálculos estadísticos se realizaron sobre los rásteres completos, no sobre imágenes reducidas.
