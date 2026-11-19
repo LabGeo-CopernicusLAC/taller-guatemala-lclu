@@ -56,7 +56,7 @@ completo del taller. Incluye:
 - Archivos de leyendas y datos auxiliares.
 - Instrucciones para preparar el entorno de trabajo.
 
-**[Descargar material completo del taller (ZIP)](https://drive.google.com/file/d/13zph6m3BqC3TZtq1j0MN3PbjqTcZud2v/view?usp=sharing)**
+**[Descargar el material del taller (ZIP)](https://github.com/gabajerez/taller-guatemala-lclu/releases/latest/download/Taller_Guatemala_Participantes.zip)**
 
 Una vez descargado, descomprime el archivo completo y
 conserva la estructura original de las carpetas `data/`
